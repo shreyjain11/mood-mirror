@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Toaster, toast } from 'react-hot-toast';
 import { 
@@ -32,6 +32,11 @@ import { analyzeText } from './utils/api';
 import { saveToHistory, getHistory, clearHistory } from './utils/storage';
 import { updateStreak, getStreak } from './utils/streakTracker';
 import { EmotionAnalysis, HistoryEntry } from './types';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
+import { auth } from './utils/firebase';
+import AuthForm from './components/AuthForm';
+import ProfileModal from './components/ProfileModal';
+import JournalCalendar from './components/JournalCalendar';
 
 function App() {
   const { isDark, toggleTheme } = useTheme();
@@ -45,6 +50,11 @@ function App() {
   const [history, setHistory] = useState<HistoryEntry[]>(() => getHistory());
   const [streak, setStreak] = useState(() => getStreak().count);
   const [isServerConnected, setIsServerConnected] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Check server connection on mount
   useEffect(() => {
@@ -80,6 +90,29 @@ function App() {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [text, isLoading, isServerConnected]);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Close menu on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    if (menuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    } else {
+      document.removeEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [menuOpen]);
 
   const handleAnalyze = useCallback(async () => {
     if (!text.trim()) return;
@@ -155,6 +188,14 @@ function App() {
   const characterCount = text.length;
   const maxCharacters = 5000;
 
+  if (loading) {
+    return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
+  }
+
+  if (!user) {
+    return <AuthForm />;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-blue-50 dark:from-gray-900 dark:via-gray-800 dark:to-purple-900 transition-colors duration-300 relative overflow-hidden">
       <BackgroundParticles />
@@ -182,7 +223,7 @@ function App() {
                 MoodMirror
               </h1>
               <p className="text-gray-600 dark:text-gray-400 text-sm flex items-center space-x-2">
-                <span>Emotional Intelligence for Your Text</span>
+                <span>Semantic Intelligence for Your Text</span>
                 {isServerConnected ? (
                   <Wifi className="w-3 h-3 text-green-500" />
                 ) : (
@@ -374,10 +415,6 @@ function App() {
               <span>Privacy</span>
             </button>
           </div>
-          <p className="text-gray-500 dark:text-gray-400 text-sm">
-            Made with <Heart className="w-4 h-4 inline text-red-500" /> by{' '}
-            <span className="font-medium">Shrey Jain</span>. Free forever.
-          </p>
         </motion.div>
       </div>
 
@@ -399,6 +436,47 @@ function App() {
         isOpen={isPrivacyOpen}
         onClose={() => setIsPrivacyOpen(false)}
       />
+
+      <div className="fixed top-4 right-4 z-50">
+        <div className="relative" ref={menuRef}>
+          <button
+            onClick={() => setMenuOpen((open) => !open)}
+            className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-3 py-1 shadow hover:shadow-md transition focus:outline-none"
+          >
+            <img
+              src={user.photoURL || 'https://img.icons8.com/color/48/000000/user-male-circle--v2.png'}
+              alt="Profile"
+              className="w-8 h-8 rounded-full border border-indigo-200"
+            />
+            <span className="font-medium text-indigo-700 text-sm hidden sm:inline">{user.displayName || user.email}</span>
+            <svg className="w-4 h-4 ml-1 text-indigo-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-100 z-50">
+              <div className="px-4 py-3 border-b border-gray-100">
+                <div className="font-semibold text-indigo-700">{user.displayName || user.email}</div>
+                <div className="text-xs text-gray-500 truncate">{user.email}</div>
+              </div>
+              <button
+                className="w-full text-left px-4 py-2 hover:bg-indigo-50 text-indigo-600 font-medium"
+                onClick={() => { setProfileOpen(true); setMenuOpen(false); }}
+              >
+                Profile
+              </button>
+              <button
+                className="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600 font-medium border-t border-gray-100"
+                onClick={() => signOut(auth)}
+              >
+                Sign Out
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
+
+      <JournalCalendar />
     </div>
   );
 }

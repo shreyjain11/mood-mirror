@@ -3,6 +3,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import OpenAI from 'openai';
+import verifyFirebaseToken from './middleware/auth.js';
+import { getFirestore } from 'firebase-admin/firestore';
 
 dotenv.config();
 
@@ -11,12 +13,31 @@ const PORT = process.env.PORT || 3001;
 
 // Enhanced CORS configuration
 const corsOptions = {
-  origin: [
-    'http://localhost:5173', // Vite dev server
-    'http://localhost:3000', // Alternative dev port
-    'http://127.0.0.1:5173',
-    'http://127.0.0.1:3000'
-  ],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // In production, allow your deployed frontend domains
+    if (process.env.NODE_ENV === 'production') {
+      // Add your deployed frontend URLs here
+      const allowedOrigins = [
+        'https://your-app-name.vercel.app', // Replace with your actual Vercel URL
+      ];
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+    } else {
+      // In development, allow all localhost ports
+      if (
+        /^http:\/\/localhost:\d+$/.test(origin) ||
+        /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+    }
+    
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -24,10 +45,19 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
+// Health check endpoint (move this above the rate limiter)
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    openaiConfigured: !!process.env.OPENAI_API_KEY
+  });
+});
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 requests per windowMs
+  max: 1000, // Increased limit for development
   message: {
     error: 'Too many requests from this IP, please try again later.'
   },
@@ -53,17 +83,10 @@ try {
   console.error('❌ Failed to initialize OpenAI client:', error.message);
 }
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    openaiConfigured: !!process.env.OPENAI_API_KEY
-  });
-});
+const db = getFirestore();
 
 // Emotional analysis endpoint
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/analyze', verifyFirebaseToken, async (req, res) => {
   try {
     console.log('📝 Received analysis request');
 
@@ -152,6 +175,50 @@ Text to analyze: "${text}"`;
     } else {
       res.status(500).json({ error: 'Failed to analyze emotional content. Please try again.' });
     }
+  }
+});
+
+// Journal: Save or update a daily entry
+app.post('/api/journal', verifyFirebaseToken, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const { date, text, analysis } = req.body;
+    if (!date || !text || !analysis) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    const docRef = db.collection('journalEntries').doc(`${userId}_${date}`);
+    await docRef.set({ userId, date, text, analysis, updatedAt: new Date().toISOString() });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save journal entry' });
+  }
+});
+
+// Journal: Get all entries for the user
+app.get('/api/journal', verifyFirebaseToken, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const snapshot = await db.collection('journalEntries').where('userId', '==', userId).get();
+    const entries = snapshot.docs.map(doc => doc.data());
+    res.json({ entries });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch journal entries' });
+  }
+});
+
+// Journal: Get entry for a specific date
+app.get('/api/journal/:date', verifyFirebaseToken, async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const { date } = req.params;
+    const docRef = db.collection('journalEntries').doc(`${userId}_${date}`);
+    const docSnap = await docRef.get();
+    if (!docSnap.exists) {
+      return res.status(404).json({ error: 'Entry not found' });
+    }
+    res.json({ entry: docSnap.data() });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch journal entry' });
   }
 });
 
