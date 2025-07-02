@@ -159,10 +159,6 @@ server/
 4. Test thoroughly
 5. Submit a pull request
 
-## License
-
-This project is free to use and modify. Created with ❤️ by Shrey Jain.
-
 ## Support
 
 For issues or questions, please create an issue in the repository.

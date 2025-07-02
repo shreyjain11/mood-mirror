@@ -32,11 +32,8 @@ import { analyzeText } from './utils/api';
 import { saveToHistory, getHistory, clearHistory } from './utils/storage';
 import { updateStreak, getStreak } from './utils/streakTracker';
 import { EmotionAnalysis, HistoryEntry } from './types';
-import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import { auth } from './utils/firebase';
-import AuthForm from './components/AuthForm';
-import ProfileModal from './components/ProfileModal';
 import JournalCalendar from './components/JournalCalendar';
+import MoodTrends from './components/MoodTrends';
 
 function App() {
   const { isDark, toggleTheme } = useTheme();
@@ -50,96 +47,31 @@ function App() {
   const [history, setHistory] = useState<HistoryEntry[]>(() => getHistory());
   const [streak, setStreak] = useState(() => getStreak().count);
   const [isServerConnected, setIsServerConnected] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState(localStorage.getItem('openai_api_key') || '');
   const menuRef = useRef<HTMLDivElement>(null);
+  const [showTrends, setShowTrends] = useState(false);
 
-  // Check server connection on mount
-  useEffect(() => {
-    const checkServerConnection = async () => {
-      try {
-        const response = await fetch('http://localhost:3001/api/health');
-        if (response.ok) {
-          setIsServerConnected(true);
-        } else {
-          setIsServerConnected(false);
-        }
-      } catch {
-        setIsServerConnected(false);
-      }
-    };
-
-    checkServerConnection();
-    const interval = setInterval(checkServerConnection, 30000); // Check every 30 seconds
-    return () => clearInterval(interval);
-  }, []);
-
-  // Keyboard shortcut handler
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-        e.preventDefault();
-        if (text.trim() && !isLoading && isServerConnected) {
-          handleAnalyze();
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [text, isLoading, isServerConnected]);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Close menu on outside click
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
-    }
-    if (menuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    } else {
-      document.removeEventListener('mousedown', handleClickOutside);
-    }
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [menuOpen]);
+  // Check server connection on mount (skip if only using OpenAI API directly)
+  // Remove this effect if not needed
 
   const handleAnalyze = useCallback(async () => {
     if (!text.trim()) return;
-    if (!isServerConnected) {
-      toast.error('Server is not connected. Please check if the server is running.');
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
     setAnalysis(null);
-
     try {
       const response = await analyzeText(text);
       setAnalysis(response.analysis);
-
       // Update streak
       const { streak: newStreak, isNewStreak } = updateStreak();
       setStreak(newStreak);
-
       if (isNewStreak && newStreak > 1) {
         toast.success(`🔥 ${newStreak} day streak! Keep going!`, {
           duration: 4000,
           position: 'top-center',
         });
       }
-
       // Save to history
       const historyEntry: HistoryEntry = {
         id: Date.now().toString(),
@@ -147,60 +79,134 @@ function App() {
         analysis: response.analysis,
         createdAt: new Date().toISOString(),
       };
-      
       saveToHistory(historyEntry);
       setHistory(getHistory());
-      
       toast.success('Analysis completed!');
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to analyze text';
+      let errorMessage = 'Failed to analyze text';
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'object' && err !== null) {
+        // Try to extract a useful message from common error shapes
+        if ('error' in err && typeof err.error === 'string') {
+          errorMessage = err.error;
+        } else if ('message' in err && typeof err.message === 'string') {
+          errorMessage = err.message;
+        } else {
+          try {
+            errorMessage = JSON.stringify(err);
+          } catch {
+            errorMessage = String(err);
+          }
+        }
+      } else {
+        errorMessage = String(err);
+      }
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {
       setIsLoading(false);
     }
-  }, [text, isServerConnected]);
+  }, [text]);
 
-  const handlePaste = useCallback(async () => {
+  const handlePaste = async () => {
     try {
       const clipboardText = await navigator.clipboard.readText();
       setText(clipboardText);
-      toast.success('Text pasted from clipboard!');
-    } catch (err) {
-      console.error('Failed to read clipboard:', err);
-      toast.error('Failed to paste from clipboard');
+    } catch {
+      toast.error('Failed to paste from clipboard.');
     }
-  }, []);
+  };
 
-  const handleClearHistory = useCallback(() => {
+  const handleClearHistory = () => {
     clearHistory();
     setHistory([]);
-    toast.success('History cleared!');
-  }, []);
+  };
 
-  const handleSelectHistoryEntry = useCallback((entry: HistoryEntry) => {
+  const handleSelectHistoryEntry = (entry: HistoryEntry) => {
     setText(entry.text);
     setAnalysis(entry.analysis);
     setIsHistoryOpen(false);
-    toast.success('Analysis loaded from history!');
-  }, []);
+  };
 
   const characterCount = text.length;
   const maxCharacters = 5000;
 
-  if (loading) {
-    return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
-  }
-
-  if (!user) {
-    return <AuthForm />;
-  }
+  // Keyboard shortcut: Cmd/Ctrl + Enter to analyzeq
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        // Only trigger if no modal is open
+        if (!isApiKeyModalOpen && !isHowItWorksOpen && !isPrivacyOpen && !isHistoryOpen && !isLoading && text.trim()) {
+          e.preventDefault();
+          handleAnalyze();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isApiKeyModalOpen, isHowItWorksOpen, isPrivacyOpen, isHistoryOpen, isLoading, text, handleAnalyze]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-blue-50 dark:from-gray-900 dark:via-gray-800 dark:to-purple-900 transition-colors duration-300 relative overflow-hidden">
       <BackgroundParticles />
       <Toaster />
-      
+
+      {/* Settings and Trends Buttons */}
+      <div className="fixed top-4 right-4 z-50 flex gap-2">
+        <button
+          onClick={() => setShowTrends(true)}
+          className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-3 py-1 shadow hover:shadow-md transition focus:outline-none"
+        >
+          <span className="font-medium text-pink-700 text-sm">Trends</span>
+          <span role="img" aria-label="Trends">📊</span>
+        </button>
+        <button
+          onClick={() => setIsApiKeyModalOpen(true)}
+          className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-3 py-1 shadow hover:shadow-md transition focus:outline-none"
+        >
+          <span className="font-medium text-indigo-700 text-sm">Settings</span>
+          <svg className="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2" /></svg>
+        </button>
+        <ThemeToggle isDark={isDark} onToggle={toggleTheme} />
+      </div>
+
+      {/* API Key Modal */}
+      {isApiKeyModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+          <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md relative">
+            <button
+              className="absolute top-3 right-3 text-gray-400 hover:text-indigo-600 text-xl"
+              onClick={() => setIsApiKeyModalOpen(false)}
+            >
+              &times;
+            </button>
+            <h2 className="text-xl font-bold mb-4 text-indigo-700 text-center">OpenAI API Key</h2>
+            <input
+              type="text"
+              className="w-full border rounded-lg p-2 mb-4 focus:ring-2 focus:ring-indigo-400"
+              placeholder="sk-..."
+              value={apiKeyInput}
+              onChange={e => setApiKeyInput(e.target.value)}
+            />
+            <button
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 rounded-lg transition disabled:opacity-60"
+              onClick={() => {
+                localStorage.setItem('openai_api_key', apiKeyInput);
+                setIsApiKeyModalOpen(false);
+                toast.success('API key saved!');
+              }}
+              disabled={!apiKeyInput.trim()}
+            >
+              Save API Key
+            </button>
+            <div className="text-xs text-gray-500 mt-2 text-center">
+              Your API key is stored only in your browser and never sent anywhere else.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="container mx-auto px-4 py-8 max-w-4xl relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
@@ -224,11 +230,6 @@ function App() {
               </h1>
               <p className="text-gray-600 dark:text-gray-400 text-sm flex items-center space-x-2">
                 <span>Semantic Intelligence for Your Text</span>
-                {isServerConnected ? (
-                  <Wifi className="w-3 h-3 text-green-500" />
-                ) : (
-                  <WifiOff className="w-3 h-3 text-red-500" />
-                )}
               </p>
             </div>
           </motion.div>
@@ -300,17 +301,17 @@ function App() {
             <div className="flex items-center space-x-4">
               <motion.button
                 onClick={handleAnalyze}
-                disabled={isLoading || !text.trim() || !isServerConnected}
+                disabled={isLoading || !text.trim()}
                 className="relative flex items-center space-x-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-lg overflow-hidden"
-                whileHover={{ 
-                  scale: isLoading || !isServerConnected ? 1 : 1.02,
+                whileHover={{
+                  scale: isLoading ? 1 : 1.02,
                   boxShadow: "0 0 30px rgba(139, 92, 246, 0.4)"
                 }}
-                whileTap={{ scale: isLoading || !isServerConnected ? 1 : 0.98 }}
+                whileTap={{ scale: isLoading ? 1 : 0.98 }}
               >
                 <motion.div
                   className="absolute inset-0 bg-gradient-to-r from-purple-400 to-pink-400 opacity-0"
-                  whileHover={{ opacity: isLoading || !isServerConnected ? 0 : 1 }}
+                  whileHover={{ opacity: isLoading ? 0 : 1 }}
                   transition={{ duration: 0.3 }}
                 />
                 <div className="relative flex items-center space-x-2">
@@ -437,44 +438,7 @@ function App() {
         onClose={() => setIsPrivacyOpen(false)}
       />
 
-      <div className="fixed top-4 right-4 z-50">
-        <div className="relative" ref={menuRef}>
-          <button
-            onClick={() => setMenuOpen((open) => !open)}
-            className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-3 py-1 shadow hover:shadow-md transition focus:outline-none"
-          >
-            <img
-              src={user.photoURL || 'https://img.icons8.com/color/48/000000/user-male-circle--v2.png'}
-              alt="Profile"
-              className="w-8 h-8 rounded-full border border-indigo-200"
-            />
-            <span className="font-medium text-indigo-700 text-sm hidden sm:inline">{user.displayName || user.email}</span>
-            <svg className="w-4 h-4 ml-1 text-indigo-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
-          </button>
-          {menuOpen && (
-            <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-100 z-50">
-              <div className="px-4 py-3 border-b border-gray-100">
-                <div className="font-semibold text-indigo-700">{user.displayName || user.email}</div>
-                <div className="text-xs text-gray-500 truncate">{user.email}</div>
-              </div>
-              <button
-                className="w-full text-left px-4 py-2 hover:bg-indigo-50 text-indigo-600 font-medium"
-                onClick={() => { setProfileOpen(true); setMenuOpen(false); }}
-              >
-                Profile
-              </button>
-              <button
-                className="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600 font-medium border-t border-gray-100"
-                onClick={() => signOut(auth)}
-              >
-                Sign Out
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
+      {showTrends && <MoodTrends onClose={() => setShowTrends(false)} />}
 
       <JournalCalendar />
     </div>
